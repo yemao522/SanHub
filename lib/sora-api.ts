@@ -4,6 +4,37 @@ import { fetch as undiciFetch, Agent, FormData, type RequestInit as UndiciReques
 import type { VideoChannel } from '@/types';
 import { fetchWithRetry } from './http-retry';
 
+type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
+
+const LOG_LEVELS: Record<LogLevel, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  silent: 50,
+};
+
+const SORA_LOG_LEVEL: LogLevel = (() => {
+  const raw = (process.env.SORA_LOG_LEVEL || '').toLowerCase();
+  if (raw in LOG_LEVELS) return raw as LogLevel;
+  return process.env.NODE_ENV === 'production' ? 'info' : 'debug';
+})();
+
+const shouldLog = (level: LogLevel) => LOG_LEVELS[level] >= LOG_LEVELS[SORA_LOG_LEVEL];
+
+const logDebug = (...args: unknown[]) => {
+  if (shouldLog('debug')) console.log(...args);
+};
+const logInfo = (...args: unknown[]) => {
+  if (shouldLog('info')) console.log(...args);
+};
+const logWarn = (...args: unknown[]) => {
+  if (shouldLog('warn')) console.warn(...args);
+};
+const logError = (...args: unknown[]) => {
+  if (shouldLog('error')) console.error(...args);
+};
+
 // ========================================
 // Sora OpenAI-Style Non-Streaming API
 // ========================================
@@ -285,7 +316,7 @@ export async function getVideoStatus(videoId: string, channelId?: string): Promi
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/videos/${videoId}`;
   
-  console.log('[Sora API v5] 查询视频状态:', apiUrl);
+  logDebug('[Sora API v5] Query video status:', apiUrl);
   
   const response = await fetchWithRetry(undiciFetch, apiUrl, () => ({
     method: 'GET',
@@ -296,7 +327,7 @@ export async function getVideoStatus(videoId: string, channelId?: string): Promi
   }));
   
   const rawData = await response.json() as any;
-  console.log('[Sora API v5] 查询响应:', JSON.stringify(rawData).substring(0, 200));
+  logDebug('[Sora API v5] Status response:', JSON.stringify(rawData).substring(0, 200));
   
   // 处理 NewAPI 包装格式
   let data = rawData;
@@ -339,6 +370,14 @@ export async function getVideoStatus(videoId: string, channelId?: string): Promi
   
   if (!response.ok && !data?.id) {
     const errorMessage = data?.error?.message || rawData?.message || '查询视频状态失败';
+    const rawSnippet = (() => {
+      try {
+        return JSON.stringify(rawData).substring(0, 200);
+      } catch {
+        return String(rawData).substring(0, 200);
+      }
+    })();
+    logError('[Sora API v5] Get status failed', { status: response.status, error: errorMessage, body: rawSnippet });
     throw new Error(errorMessage);
   }
   
@@ -366,7 +405,7 @@ export async function getVideoContentUrl(videoId: string, channelId?: string): P
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/videos/${videoId}/content`;
   
-  console.log('[Sora API v5] 获取视频内容:', apiUrl);
+  logDebug('[Sora API v5] Fetch video content:', apiUrl);
   
   // 使用 redirect: 'manual' 来捕获 302 重定向的 Location
   const requestInit: UndiciRequestInit = {
@@ -379,12 +418,12 @@ export async function getVideoContentUrl(videoId: string, channelId?: string): P
   };
   const response = await fetchWithRetry(undiciFetch, apiUrl, () => requestInit);
   
-  console.log('[Sora API v5] /content 响应状态:', response.status);
+  logDebug('[Sora API v5] /content status:', response.status);
   
   // 如果是重定向（301, 302, 307, 308），返回 Location header 中的实际视频 URL
   if ([301, 302, 307, 308].includes(response.status)) {
     const location = response.headers.get('location');
-    console.log('[Sora API v5] /content 重定向 Location:', location?.substring(0, 100));
+    logDebug('[Sora API v5] /content redirect location:', location?.substring(0, 100));
     if (location) {
       return parseVideoUrl(location);
     }
@@ -396,7 +435,7 @@ export async function getVideoContentUrl(videoId: string, channelId?: string): P
     // 如果是 JSON，尝试解析获取 URL
     if (contentType.includes('application/json')) {
       const data = await response.json() as any;
-      console.log('[Sora API v5] /content JSON 响应:', JSON.stringify(data).substring(0, 200));
+      logDebug('[Sora API v5] /content JSON response:', JSON.stringify(data).substring(0, 200));
       if (data?.url) {
         return parseVideoUrl(data.url);
       }
@@ -406,12 +445,17 @@ export async function getVideoContentUrl(videoId: string, channelId?: string): P
   // 如果是错误响应
   if (response.status >= 400) {
     const data = await response.json().catch(() => ({})) as any;
-    console.log('[Sora API v5] /content 错误响应:', response.status, JSON.stringify(data));
-    throw new Error(data?.error?.message || `获取视频内容失败: ${response.status}`);
+    const errorMessage = data?.error?.message || `获取视频内容失败: ${response.status}`;
+    logError('[Sora API v5] /content error response', {
+      status: response.status,
+      error: errorMessage,
+      body: JSON.stringify(data).substring(0, 200),
+    });
+    throw new Error(errorMessage);
   }
   
   // 兜底：返回 content URL（不推荐，因为需要认证）
-  console.log('[Sora API v5] /content 未获取到重定向，返回原始 URL');
+  logError('[Sora API v5] /content missing redirect; cannot resolve public URL');
   throw new Error('无法获取视频直链');
 }
 
@@ -442,7 +486,9 @@ async function pollVideoCompletion(
       onProgress(status.progress, status.status);
     }
     
-    console.log(`[Sora API v5] 视频状态: ${status.status}, 进度: ${status.progress}%, hasUrl: ${!!status.url || !!status.output?.url}`);
+    logDebug(
+      `[Sora API v5] Video status: ${status.status}, progress: ${status.progress}%, hasUrl: ${!!status.url || !!status.output?.url}`
+    );
     
     // 统一处理 output.url 格式
     if (status.output?.url && !status.url) {
@@ -454,11 +500,11 @@ async function pollVideoCompletion(
       // 如果没有 URL，尝试通过 /content 端点获取
       if (!status.url) {
         try {
-          console.log('[Sora API v5] 状态完成但无 URL，尝试 /content 端点');
+          logDebug('[Sora API v5] Completed without URL, trying /content');
           const contentUrl = await getVideoContentUrl(videoId, channelId);
           status.url = contentUrl;
         } catch (e) {
-          console.log('[Sora API v5] /content 端点获取失败:', e);
+          logWarn('[Sora API v5] /content fetch failed', e);
         }
       }
       return status;
@@ -468,12 +514,14 @@ async function pollVideoCompletion(
       failedCount += 1;
       const errorMessage = status.error?.message || '视频生成失败';
       if (!isRetryableFailedError(status.error?.message)) {
+        logError('[Sora API v5] Video status failed', { videoId, error: errorMessage });
         throw new Error(errorMessage);
       }
       if (failedCount >= maxFailedCount) {
+        logError('[Sora API v5] Video status failed after retries', { videoId, error: errorMessage });
         throw new Error(errorMessage);
       }
-      console.warn(
+      logWarn(
         `[Sora API v5] Status failed (${failedCount}/${maxFailedCount}), retrying after ${failedRetryDelayMs}ms: ${errorMessage}`
       );
       await new Promise(resolve => setTimeout(resolve, failedRetryDelayMs));
@@ -486,6 +534,11 @@ async function pollVideoCompletion(
     if (status.progress === lastProgress) {
       stallCount++;
       if (stallCount >= maxStallCount) {
+        logError('[Sora API v5] Video stalled', {
+          videoId,
+          status: status.status,
+          progress: status.progress,
+        });
         throw new Error('视频生成超时：进度长时间无变化');
       }
     } else {
@@ -520,7 +573,7 @@ export async function generateVideo(
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/videos`;
 
-  console.log('[Sora API] 视频生成请求:', {
+  logInfo('[Sora API] Video generation request:', {
     apiUrl,
     model: request.model,
     prompt: request.prompt?.substring(0, 50),
@@ -563,7 +616,7 @@ export async function generateVideo(
   const rawData = await response.json() as any;
 
   // 版本标记 v4 - 改进 NewAPI 格式解析
-  console.log('[Sora API v4] 原始响应:', JSON.stringify(rawData));
+  logDebug('[Sora API v4] Raw response:', JSON.stringify(rawData));
 
   // 处理 NewAPI 包装格式：{code: "...", message: "{json string}", data: null}
   let data = rawData;
@@ -572,7 +625,7 @@ export async function generateVideo(
       // 尝试解析 message 字段中的 JSON
       const parsed = JSON.parse(rawData.message);
       if (parsed?.id) {
-        console.log('[Sora API v5] 检测到 NewAPI 格式，解析 message 字段成功');
+        logDebug('[Sora API v5] Detected NewAPI format, parsed message payload');
         // 处理 output.url 格式
         if (parsed.output?.url && !parsed.url) {
           parsed.url = parsed.output.url;
@@ -580,7 +633,7 @@ export async function generateVideo(
         data = parsed;
       }
     } catch (parseError) {
-      console.log('[Sora API v5] message JSON 解析失败:', parseError);
+      logDebug('[Sora API v5] Message JSON parse failed:', parseError);
       // 尝试用正则提取关键字段
       try {
         const idMatch = rawData.message.match(/"id"\s*:\s*"([^"]+)"/);
@@ -594,7 +647,7 @@ export async function generateVideo(
         }
         
         if (idMatch) {
-          console.log('[Sora API v5] 使用正则提取关键字段, urlFound:', !!urlMatch);
+          logDebug('[Sora API v5] Regex fallback parsed fields, urlFound:', !!urlMatch);
           data = {
             id: idMatch[1],
             status: statusMatch ? statusMatch[1] : undefined,
@@ -602,12 +655,12 @@ export async function generateVideo(
           };
         }
       } catch (regexError) {
-        console.log('[Sora API v5] 正则提取失败:', regexError);
+        logDebug('[Sora API v5] Regex fallback failed:', regexError);
       }
     }
   }
 
-  console.log('[Sora API v5] 解析后数据:', {
+  logDebug('[Sora API v5] Parsed payload:', {
     hasId: !!data?.id,
     taskStatus: data?.status,
     taskId: data?.id,
@@ -629,7 +682,7 @@ export async function generateVideo(
   // 检查是否是错误响应（NewAPI 格式的真正错误）
   if (!response.ok && !data?.id) {
     const errorMessage = data?.error?.message || rawData?.message || data?.error || '视频生成失败';
-    console.error('[Sora API v5] 视频生成错误:', errorMessage);
+    logError('[Sora API v5] Video generation failed:', errorMessage);
     throw new Error(errorMessage);
   }
 
@@ -642,7 +695,7 @@ export async function generateVideo(
     if (taskResponse.url || isCompleted) {
       if (taskResponse.url) {
         const videoUrl = parseVideoUrl(taskResponse.url);
-        console.log('[Sora API v5] 视频生成成功:', videoUrl?.substring(0, 80));
+        logInfo('[Sora API v5] Video generation completed:', videoUrl?.substring(0, 80));
         return {
           id: taskResponse.id,
           object: taskResponse.object || 'video',
@@ -658,21 +711,26 @@ export async function generateVideo(
       }
       // 状态是完成但没有 URL，尝试轮询获取
       if (isCompleted && !taskResponse.url) {
-        console.log('[Sora API v5] 状态已完成但无 URL，尝试轮询获取...');
+        logWarn('[Sora API v5] Completed without URL, retrying via polling...');
       }
     }
     
     // 如果失败，抛出错误
     if (taskResponse.status === 'failed') {
+      logError('[Sora API v5] Video task failed', {
+        taskId: taskResponse.id,
+        error: taskResponse.error?.message || '视频生成失败',
+      });
       throw new Error(taskResponse.error?.message || '视频生成失败');
     }
     
     // 如果还在处理中或需要获取 URL，轮询等待
     if (isInProgressStatus(taskResponse.status) || (taskResponse.id && !taskResponse.url)) {
-      console.log('[Sora API v5] 开始轮询... taskId:', taskResponse.id);
+      logInfo('[Sora API v5] Polling task status...', taskResponse.id);
       const finalStatus = await pollVideoCompletion(taskResponse.id, onProgress, channelId);
       
       if (!finalStatus.url) {
+        logError('[Sora API v5] Video completed without URL', { taskId: finalStatus.id });
         throw new Error('视频生成完成但未返回 URL');
       }
       
@@ -694,13 +752,13 @@ export async function generateVideo(
 
   // 旧格式响应（直接返回 data 数组）
   if (data?.data && Array.isArray(data.data) && data.data.length > 0 && data.data[0]?.url) {
-    console.log('[Sora API] 视频生成成功（旧格式）:', data.data[0].url);
+    logInfo('[Sora API] Video generation completed (legacy):', data.data[0].url);
     const legacy = data as VideoGenerationResponse;
     return { ...legacy, channelId };
   }
 
   // 未知格式，抛出错误
-  console.error('[Sora API] 未知响应格式:', JSON.stringify(data));
+  logError('[Sora API] Unknown response format:', JSON.stringify(data).substring(0, 200));
   throw new Error('视频生成失败：API 返回了未知格式的响应');
 }
 
@@ -778,7 +836,7 @@ export async function remixVideo(
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/videos/${encodeURIComponent(videoId)}/remix`;
 
-  console.log('[Sora API] Remix 请求:', {
+  logInfo('[Sora API] Remix request:', {
     apiUrl,
     videoId,
     prompt: request.prompt?.substring(0, 50),
@@ -803,7 +861,7 @@ export async function remixVideo(
   }));
 
   const rawData = await response.json() as any;
-  console.log('[Sora API] Remix 响应:', JSON.stringify(rawData).substring(0, 200));
+  logDebug('[Sora API] Remix response:', JSON.stringify(rawData).substring(0, 200));
 
   if (!response.ok && !rawData?.id) {
     const errorMessage = rawData?.error?.message || rawData?.message || 'Remix 失败';
@@ -835,7 +893,7 @@ export async function remixVideo(
 
   // 异步模式或需要轮询
   if (isInProgressStatus(taskResponse.status) || (taskResponse.id && !taskResponse.url)) {
-    console.log('[Sora API] Remix 开始轮询... taskId:', taskResponse.id);
+    logInfo('[Sora API] Remix polling started:', taskResponse.id);
     const finalStatus = await pollVideoCompletion(taskResponse.id, onProgress);
 
     if (!finalStatus.url) {
@@ -938,7 +996,7 @@ export async function generateImage(request: ImageGenerationRequest): Promise<Im
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/images/generations`;
 
-  console.log('[Sora API] 图片生成请求:', {
+  logInfo('[Sora API] Image generation request:', {
     apiUrl,
     model: request.model,
     prompt: request.prompt?.substring(0, 50),
@@ -958,11 +1016,11 @@ export async function generateImage(request: ImageGenerationRequest): Promise<Im
 
   if (!response.ok) {
     const errorMessage = data?.error?.message || data?.message || '图片生成失败';
-    console.error('[Sora API] 图片生成错误:', errorMessage);
+    logError('[Sora API] Image generation failed:', errorMessage);
     throw new Error(errorMessage);
   }
 
-  console.log('[Sora API] 图片生成成功');
+  logInfo('[Sora API] Image generation completed');
   return data as ImageGenerationResponse;
 }
 
@@ -1007,7 +1065,7 @@ export async function createCharacterCard(request: CharacterCardRequest): Promis
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/characters`;
 
-  console.log('[Sora API] 角色卡创建请求');
+  logInfo('[Sora API] Character card request');
 
   const buildFormData = () => {
     const formData = new FormData();
@@ -1038,11 +1096,11 @@ export async function createCharacterCard(request: CharacterCardRequest): Promis
 
   if (!response.ok) {
     const errorMessage = data?.error?.message || data?.message || '角色卡创建失败';
-    console.error('[Sora API] 角色卡创建错误:', errorMessage);
+    logError('[Sora API] Character card failed:', errorMessage);
     throw new Error(errorMessage);
   }
 
-  console.log('[Sora API] 角色卡创建成功:', JSON.stringify(data, null, 2));
+  logInfo('[Sora API] Character card completed:', JSON.stringify(data, null, 2));
   return data as CharacterCardResponse;
 }
 
@@ -1349,7 +1407,7 @@ export async function enhancePrompt(request: EnhancePromptRequest): Promise<Enha
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
   const apiUrl = `${normalizedBaseUrl}/v1/enhance_prompt`;
 
-  console.log('[Sora API] 提示词增强请求:', {
+  logInfo('[Sora API] Prompt enhance request:', {
     prompt: request.prompt?.substring(0, 50),
     expansion_level: request.expansion_level,
     duration_s: request.duration_s,
@@ -1373,10 +1431,10 @@ export async function enhancePrompt(request: EnhancePromptRequest): Promise<Enha
 
   if (!response.ok) {
     const errorMessage = data?.error?.message || data?.message || '提示词增强失败';
-    console.error('[Sora API] 提示词增强错误:', errorMessage);
+    logError('[Sora API] Prompt enhance failed:', errorMessage);
     throw new Error(errorMessage);
   }
 
-  console.log('[Sora API] 提示词增强成功');
+  logInfo('[Sora API] Prompt enhance completed');
   return data as EnhancePromptResponse;
 }

@@ -3,6 +3,34 @@ import { getSystemConfig } from './db';
 import type { SoraGenerateRequest, GenerateResult } from '@/types';
 import { generateVideo, type VideoGenerationRequest } from './sora-api';
 
+type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
+
+const LOG_LEVELS: Record<LogLevel, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+  silent: 50,
+};
+
+const SORA_LOG_LEVEL: LogLevel = (() => {
+  const raw = (process.env.SORA_LOG_LEVEL || '').toLowerCase();
+  if (raw in LOG_LEVELS) return raw as LogLevel;
+  return process.env.NODE_ENV === 'production' ? 'info' : 'debug';
+})();
+
+const shouldLog = (level: LogLevel) => LOG_LEVELS[level] >= LOG_LEVELS[SORA_LOG_LEVEL];
+
+const logDebug = (...args: unknown[]) => {
+  if (shouldLog('debug')) console.log(...args);
+};
+const logInfo = (...args: unknown[]) => {
+  if (shouldLog('info')) console.log(...args);
+};
+const logError = (...args: unknown[]) => {
+  if (shouldLog('error')) console.error(...args);
+};
+
 // ========================================
 // Sora API 封装 (Non-Streaming)
 // ========================================
@@ -64,7 +92,7 @@ export async function generateWithSora(
 ): Promise<GenerateResult> {
   const config = await getSystemConfig();
 
-  console.log('[Sora] 请求配置:', {
+  logDebug('[Sora] Request config:', {
     model: request.model,
     prompt: request.prompt?.substring(0, 50),
     hasFiles: request.files && request.files.length > 0,
@@ -100,10 +128,16 @@ export async function generateWithSora(
   }
 
   // 调用非流式 API，传递进度回调
-  const result = await generateVideo(
-    videoRequest,
-    onProgress ? (progress) => onProgress(progress) : undefined
-  );
+  let result;
+  try {
+    result = await generateVideo(
+      videoRequest,
+      onProgress ? (progress) => onProgress(progress) : undefined
+    );
+  } catch (error) {
+    logError('[Sora] Generation failed:', error);
+    throw error;
+  }
 
   if (!result.data || result.data.length === 0 || !result.data[0].url) {
     throw new Error('视频生成失败：未返回有效的视频 URL');
@@ -113,7 +147,7 @@ export async function generateWithSora(
 
   const { type, cost } = getTypeAndCost(request.model, config.pricing);
 
-  console.log('[Sora] 生成成功:', { type, url: result.data[0].url, cost });
+  logInfo('[Sora] Generation completed:', { type, url: result.data[0].url, cost });
 
   return {
     type,
