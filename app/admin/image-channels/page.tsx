@@ -9,9 +9,9 @@ import { toast } from '@/components/ui/toaster';
 import type { ImageChannel, ImageModel, ChannelType, ImageModelFeatures } from '@/types';
 
 const CHANNEL_TYPES: { value: ChannelType; label: string; description: string }[] = [
-  { value: 'openai-compatible', label: 'OpenAI 兼容', description: 'OpenAI Images API 格式' },
+  { value: 'openai-compatible', label: 'OpenAI Streaming', description: 'OpenAI Images API / Chat streaming' },
   { value: 'gemini', label: 'Gemini', description: 'Google Gemini Native API' },
-  { value: 'modelscope', label: 'ModelScope', description: '魔搭社区 API' },
+  { value: 'modelscope', label: 'ModelScope', description: 'ModelScope API' },
   { value: 'gitee', label: 'Gitee AI', description: 'Gitee AI API' },
   { value: 'sora', label: 'Sora', description: 'OpenAI Sora API' },
 ];
