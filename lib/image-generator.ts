@@ -215,8 +215,10 @@ async function generateWithGemini(
 // ========================================
 
 const MODELSCOPE_ASYNC_MODELS = new Set([
-  'Qwen/Qwen-Image-Edit-2509',
   'Qwen/Qwen-Image',
+  'Qwen/Qwen-Image-2512',
+  'Qwen/Qwen-Image-Edit-2509',
+  'Qwen/Qwen-Image-Edit-2511',
   'black-forest-labs/FLUX.2-dev',
 ]);
 
