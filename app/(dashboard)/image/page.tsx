@@ -255,7 +255,9 @@ export default function ImageGenerationPage() {
       abortControllersRef.current.set(taskId, controller);
 
       const maxAttempts = 240;
+      const maxConsecutiveErrors = 5;
       let attempts = 0;
+      let consecutiveErrors = 0;
 
       const poll = async (): Promise<void> => {
         if (controller.signal.aborted) return;
@@ -284,9 +286,13 @@ export default function ImageGenerationPage() {
             throw new Error(data.error || '查询任务状态失败');
           }
 
+          // Reset error counter on success
+          consecutiveErrors = 0;
           const status = data.data.status;
+          const resultUrl = typeof data.data.url === 'string' ? data.data.url : '';
+          const isCompletedStatus = status === 'completed' || status === 'succeeded';
 
-          if (status === 'completed') {
+          if (isCompletedStatus && resultUrl) {
             await update();
 
             const generation: Generation = {
@@ -295,7 +301,7 @@ export default function ImageGenerationPage() {
               type: data.data.type,
               prompt: taskPrompt,
               params: {},
-              resultUrl: data.data.url,
+              resultUrl,
               cost: data.data.cost,
               status: 'completed',
               createdAt: data.data.createdAt,
@@ -311,7 +317,7 @@ export default function ImageGenerationPage() {
             });
 
             abortControllersRef.current.delete(taskId);
-          } else if (status === 'failed') {
+          } else if (status === 'failed' || status === 'cancelled') {
             setTasks((prev) =>
               prev.map((t) =>
                 t.id === taskId
@@ -324,11 +330,33 @@ export default function ImageGenerationPage() {
               )
             );
             abortControllersRef.current.delete(taskId);
-          } else {
+          } else if (isCompletedStatus && !resultUrl) {
+            // Completed but no URL yet, keep polling
             setTasks((prev) =>
               prev.map((t) =>
                 t.id === taskId
-                  ? { ...t, status: status as 'pending' | 'processing' }
+                  ? {
+                      ...t,
+                      status: 'processing' as const,
+                      progress: typeof data.data.progress === 'number' ? data.data.progress : t.progress,
+                    }
+                  : t
+              )
+            );
+            setTimeout(poll, 10000);
+          } else {
+            const nextStatus =
+              status === 'pending' || status === 'processing'
+                ? status
+                : 'processing';
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === taskId
+                  ? {
+                      ...t,
+                      status: nextStatus as 'pending' | 'processing',
+                      progress: typeof data.data.progress === 'number' ? data.data.progress : t.progress,
+                    }
                   : t
               )
             );
@@ -336,13 +364,29 @@ export default function ImageGenerationPage() {
           }
         } catch (err) {
           if ((err as Error).name === 'AbortError') return;
+          consecutiveErrors++;
+          const errMsg = (err as Error).message || '网络错误';
+          // Retry on transient network errors
+          const isTransientError =
+            errMsg.includes('socket') ||
+            errMsg.includes('Socket') ||
+            errMsg.includes('ECONNRESET') ||
+            errMsg.includes('ETIMEDOUT') ||
+            errMsg.includes('network') ||
+            errMsg.includes('fetch');
+          if (isTransientError && consecutiveErrors < maxConsecutiveErrors) {
+            console.warn(`[Poll] Transient error (${consecutiveErrors}/${maxConsecutiveErrors}), retrying...`, errMsg);
+            const delay = Math.min(5000 * Math.pow(2, consecutiveErrors - 1), 60000);
+            setTimeout(poll, delay);
+            return;
+          }
           setTasks((prev) =>
             prev.map((t) =>
               t.id === taskId
                 ? {
                     ...t,
                     status: 'failed' as const,
-                    errorMessage: (err as Error).message,
+                    errorMessage: errMsg,
                   }
                 : t
             )
