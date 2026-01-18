@@ -237,7 +237,8 @@ export default function ImageGenerationPage() {
     for (const img of images) {
       let data = img.data;
       if (!data && img.file) {
-        data = await fileToBase64(img.file);
+        const base64 = await fileToBase64(img.file);
+        data = `data:${img.mimeType};base64,${base64}`;
       }
       if (data) {
         result.push({ mimeType: img.mimeType, data });
