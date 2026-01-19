@@ -11,8 +11,8 @@ export async function compressImageToWebP(file: File): Promise<File> {
   const options = {
     maxSizeMB: 15,
     useWebWorker: true,
-    fileType: 'image/webp',
-    initialQuality: 0.75,
+    fileType: 'image/jpeg',
+    initialQuality: 0.85,
   };
 
   return imageCompression(file, options);

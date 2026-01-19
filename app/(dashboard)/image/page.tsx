@@ -449,8 +449,8 @@ export default function ImageGenerationPage() {
         }
 
         compressedImages.push({
-          mimeType: 'image/webp',
-          data: `data:image/webp;base64,${base64}`
+          mimeType: 'image/jpeg',
+          data: `data:image/jpeg;base64,${base64}`
         });
       }
 
